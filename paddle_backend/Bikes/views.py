@@ -1,163 +1,178 @@
-from django.shortcuts import render
-
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.permissions import IsAuthenticated
-from knox.auth import TokenAuthentication
-
-from rest_framework import status
 from rest_framework.response import Response
-from rest_framework.decorators import api_view
+from rest_framework import status
+from django.shortcuts import get_object_or_404
 from Owner.models import OwnerProfile  
-from customers.serializers import BikesSerializer
-from .models import Bikes
-from django.contrib.gis.geos import Point
-from django.contrib.gis.db.models.functions import Distance
-from Trip.models import Trip
+from Owner.serializers import BikesSerializer
+from .models import Bikes, BikeHardware
 from geopy.distance import geodesic
 from .pricing import calculate_price
+from django.utils import timezone
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 
 @api_view(['POST'])
-@authentication_classes([TokenAuthentication])
-def add_bike(request):
-    if request.user.is_authenticated and hasattr(request.user, 'owner_profile'):
-        Owner_profile = request.user.owner_profile
-        data = request.data.copy()
-        data['owner'] = owner_profile.id
-
-        serializer = BikesSerializer(data=data, context={'request': request})
-
-        if serializer.is_valid():
-            bikes = serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        else:
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    else:
-        return Response({'error': 'Only authenticated Owner can add bikes.'}, status=status.HTTP_403_FORBIDDEN)
-
-@api_view(['GET'])
-@authentication_classes([TokenAuthentication])
-# @permission_classes([IsAuthenticated])
-def get_Owner_bikes(request):
-    try:
-        # Retrieve the driver profile from the authenticated user
-        owner_profile = request.user.owner_profile
-    except OwnerProfile.DoesNotExist:
-        return Response({'error': 'Owner profile not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    # Retrieve the bikes associated with the driver's profile
-    bikes = Bikes.objects.filter(owner=driver_profile)
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def activate_bike(request, bike_id):
+    bike = get_object_or_404(Bikes, pk=bike_id, owner=request.user.owner_profile)
+    scanned_serial = request.data.get('serial_number')
     
-    # Serialize the bike data
-    serializer = BikesSerializer(bikes, many=True)
-    
-    return Response(serializer.data, status=status.HTTP_200_OK)
-
-@api_view(['PUT'])
-def make_bike_available(request, bike_id):
-    # Check if the user is authenticated and is a driver
-    if request.user.is_authenticated and hasattr(request.user, 'owner_profile'):
-        try:
-            # Retrieve the bike associated with the provided bike_id
-            bike = Bikes.objects.get(pk=bike_id, owner=request.user.owner_profile)
-        except Bikes.DoesNotExist:
-            return Response({'error': 'Bike not found or you are not the owner'}, status=status.HTTP_404_NOT_FOUND)
-
-        # Update the is_available field to True
-        bike.is_available = True
-        bike.save()
-
-        return Response({'message': 'Bike is now available'}, status=status.HTTP_200_OK)
-    else:
-        return Response({'error': 'Only authenticated drivers can make bikes available'}, status=status.HTTP_403_FORBIDDEN)
-
-
-@api_view(['GET'])
-def get_available_bikes(request):
-    latitude = request.query_params.get('latitude')
-    longitude = request.query_params.get('longitude')
-
-    if not (latitude and longitude):
-        return Response({'error': 'Latitude and longitude parameters are required'}, status=400)
-
-    user_location = (float(latitude), float(longitude))
-    search_radius_km = 5  # Define the search radius in kilometers
-
-    bikes = Bikes.objects.filter(is_available=True)
-    nearby_bikes = []
-
-    for bike in bikes:
-        if bike.latitude is not None and bike.longitude is not None:
-            bike_location = (bike.latitude, bike.longitude)
-            distance = geodesic(user_location, bike_location).kilometers
-            if distance <= search_radius_km:
-                bike.distance = distance  # Add distance attribute for sorting
-                nearby_bikes.append(bike)
-
-    nearby_bikes.sort(key=lambda x: x.distance)
-
-    serializer = BikeSerializer(nearby_bikes, many=True)
-    return Response(serializer.data)
-
-
-
-
-
-
+    if bike.activate_with_hardware(scanned_serial):
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f'notifications_{request.user.id}',
+            {
+                'type': 'send_notification',
+                'title': 'Bike Activated',
+                'message': f'Bike {bike.bike_name} has been activated successfully',
+                'data': {
+                    'bike_id': bike.id,
+                    'hardware_status': bike.get_hardware_status()
+                }
+            }
+        )
+        return Response({
+            'message': 'Bike activated successfully',
+            'hardware_status': bike.get_hardware_status()
+        })
+    return Response({'error': 'Invalid or already assigned hardware'}, status=400)
 
 @api_view(['POST'])
-def search_for_ride(request):
-    # Get customer's latitude and longitude from the request data
-    latitude = request.data.get('latitude')
-    longitude = request.data.get('longitude')
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def get_bike_unlock_code(request, bike_id):
+    bike = get_object_or_404(Bikes, pk=bike_id)
+    if not bike.is_active or not bike.is_available or bike.bike_status != 'available':
+        return Response({'error': 'Bike is not available'}, status=400)
     
-    if not (latitude and longitude):
-        return Response({'error': 'Latitude and longitude are required'}, status=400)
+    if bike.verify_unlock_code(request.data.get('code')):
+        channel_layer = get_channel_layer()
+        for user_id in [request.user.id, bike.owner.user.id]:
+            async_to_sync(channel_layer.group_send)(
+                f'notifications_{user_id}',
+                {
+                    'type': 'send_notification',
+                    'title': 'Bike Unlocked',
+                    'message': f'Bike {bike.bike_name} has been unlocked',
+                    'data': {
+                        'bike_id': bike.id,
+                        'hardware_status': bike.get_hardware_status()
+                    }
+                }
+            )
+        return Response({
+            'message': 'Bike unlocked successfully',
+            'hardware_status': bike.get_hardware_status()
+        })
+    return Response({'error': 'Invalid unlock code'}, status=400)
 
-    customer_location = (float(latitude), float(longitude))
+@api_view(['POST'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def lock_bike(request, bike_id):
+    bike = get_object_or_404(Bikes, pk=bike_id)
+    if bike.lock_bike():
+        channel_layer = get_channel_layer()
+        for user_id in [request.user.id, bike.owner.user.id]:
+            async_to_sync(channel_layer.group_send)(
+                f'notifications_{user_id}',
+                {
+                    'type': 'send_notification',
+                    'title': 'Bike Locked',
+                    'message': f'Bike {bike.bike_name} has been locked',
+                    'data': {
+                        'bike_id': bike.id,
+                        'hardware_status': bike.get_hardware_status()
+                    }
+                }
+            )
+        return Response({
+            'message': 'Bike locked successfully',
+            'hardware_status': bike.get_hardware_status()
+        })
+    return Response({'error': 'Could not lock bike'}, status=400)
 
-    # Define the search radius (in kilometers)
-    search_radius_km = 5  # Adjust the search radius as needed
+@api_view(['POST'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def toggle_bike_availability(request, bike_id):
+    bike = get_object_or_404(Bikes, pk=bike_id, owner=request.user.owner_profile)
+    
+    if not bike.is_active:
+        return Response({'error': 'Bike must be activated first'}, status=400)
+        
+    bike.is_available = not bike.is_available
+    bike.bike_status = 'available' if bike.is_available else 'disabled'
+    bike.save()
+    
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        f'notifications_{request.user.id}',
+        {
+            'type': 'send_notification',
+            'title': 'Bike Availability Updated',
+            'message': f'Bike {bike.bike_name} is now {"available" if bike.is_available else "hidden"}',
+            'data': {
+                'bike_id': bike.id,
+                'is_available': bike.is_available,
+                'bike_status': bike.bike_status
+            }
+        }
+    )
+    
+    return Response({
+        'message': f'Bike is now {"available" if bike.is_available else "hidden"} on the map',
+        'is_available': bike.is_available,
+        'bike_status': bike.bike_status
+    })
 
-    # Query all available bikes
-    available_bikes = Bike.objects.filter(is_available=True)
-    nearby_bikes = []
 
+@api_view(['GET'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def get_nearby_bikes(request):
+    
+    rider_latitude = request.GET.get('latitude')
+    rider_longitude = request.GET.get('longitude')
+    
+    if not rider_latitude or not rider_longitude:
+        return Response(
+            {'error': 'Latitude and longitude are required'}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    available_bikes = Bikes.objects.filter(
+        is_available=True,
+        is_active=True,
+        bike_status='available'
+    ).select_related('owner', 'hardware')
+    
+    bikes_with_distance = []
     for bike in available_bikes:
-        if bike.latitude is not None and bike.longitude is not None:
-            bike_location = (bike.latitude, bike.longitude)
-            distance = geodesic(customer_location, bike_location).kilometers
-            if distance <= search_radius_km:
-                bike.distance = distance  # Add distance attribute for sorting
-                nearby_bikes.append(bike)
+        distance = calculate_distance(
+            rider_latitude, rider_longitude,
+            bike.latitude, bike.longitude
+        )
+        bikes_with_distance.append({
+            'id': bike.id,
+            'bike_name': bike.bike_name,
+            'brand': bike.brand,
+            'model': bike.model,
+            'location': {
+                'latitude': bike.latitude,
+                'longitude': bike.longitude
+            },
+            'distance': round(distance, 2),
+            'battery_level': bike.hardware.battery_level
+        })
+    
+    # Sort bikes by distance from rider
+    bikes_with_distance.sort(key=lambda x: x['distance'])
+    
+    return Response(bikes_with_distance)
 
-    nearby_bikes.sort(key=lambda x: x.distance)
 
-    if nearby_bikes:
-        # Calculate price for the ride
-        distance_km = request.data.get('distance_km')
-        duration_hours = request.data.get('duration_hours')
-        base_fare = 5  # Define your base fare
-        rate_per_km = 2  # Define your rate per kilometer
-        rate_per_hour = 1.5  # Define your rate per hour
 
-        # Call the calculate_price function to get the total fare
-        price = calculate_price(distance_km, duration_hours, base_fare, rate_per_km, rate_per_hour)
-
-        # Serialize the data and return available bikes along with price
-        serializer = BikeSerializer(nearby_bikes, many=True)
-        return Response({'available_bikes': serializer.data, 'price': price})
-    else:
-        # Check for partially available bikes (e.g., bikes that will become available soon)
-        partially_available_trips = Trip.objects.filter(status='ontrip')
-        partially_available_bikes = []
-        
-        for trip in partially_available_trips:
-            destination_location = (trip.destination_latitude, trip.destination_longitude)
-            distance_to_destination = geodesic(customer_location, destination_location).kilometers
-            if distance_to_destination <= search_radius_km * 0.1:  # e.g., within 10% of the search radius
-                partially_available_bikes.append(trip.bike)
-        
-        if partially_available_bikes:
-            return Response({'message': 'Bike available soon (90% done trip)'})
-        else:
-            return Response({'message': 'No available bikes at the moment'})

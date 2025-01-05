@@ -1,10 +1,11 @@
-# this is to take the model from an abject to json
+
 from rest_framework import serializers
-from .models import UserProfile
+from Rider.models import UserProfile  
 from Riderequest.models import Ride_Request
-from Owner.models import OwnerProfile
+from .models import OwnerProfile  
 from Bikes.models import Bikes
-from django.contrib.gis.geos import Point
+from chat.models import Message, ChatRoom
+# from django.contrib.gis.geos import Point
 
 class UserProfileSerializer(serializers.ModelSerializer) :
     username = serializers.ReadOnlyField(source='user.username')
@@ -46,3 +47,20 @@ class BikesSerializer(serializers.ModelSerializer):
         # validated_data['longitude'] = driver_profile.longitude
         bike = Bikes.objects.create(**validated_data)
         return bike
+    
+
+    # Add these to your existing serializers
+
+class MessageSerializer(serializers.ModelSerializer):
+    sender_name = serializers.CharField(source='sender.username', read_only=True)
+    
+    class Meta:
+        model = Message
+        fields = ['id', 'sender_name', 'content', 'timestamp', 'is_read']
+
+class ChatRoomSerializer(serializers.ModelSerializer):
+    messages = MessageSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = ChatRoom
+        fields = ['id', 'trip', 'messages', 'created_at']

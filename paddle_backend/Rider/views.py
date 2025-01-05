@@ -1,5 +1,5 @@
 from datetime import timedelta
-from django.shortcuts import render
+from django.shortcuts import render, get_object_or_404
 from django.http import JsonResponse
 from rest_framework import status
 from rest_framework.exceptions import AuthenticationFailed
@@ -7,36 +7,29 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.contrib.auth.models import User
-from knox.models import AuthToken
-from knox.auth import TokenAuthentication
-from django.contrib.auth import authenticate
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from django.contrib.auth import authenticate, logout
 from .models import UserProfile
 from Owner.serializers import UserProfileSerializer
 from django.contrib.auth.decorators import login_required
-from knox.views import LogoutAllView 
-from django.contrib.gis.geos import Point
-from django.contrib.auth import logout 
+# from django.contrib.gis.geos import Point
 from django.db import transaction
+import stripe
 
 @api_view(['GET']) 
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
 def Rider_list(request):
-    Rider = UserProfile.objects.all()
-    serialized = UserProfileSerializer(Rider, many=True)   
+    riders = UserProfile.objects.all()
+    serialized = UserProfileSerializer(riders, many=True)   
     return JsonResponse(serialized.data, safe=False)
 
 @api_view(['GET'])
-@authentication_classes([TokenAuthentication])
+@authentication_classes([JWTAuthentication])
 @permission_classes([IsAuthenticated])
 def check_token_validity(request):
-    try:
-        # If the request reaches this point, the token is valid
-        return Response({'message': 'Token is valid'}, status=status.HTTP_200_OK)
-    except AuthenticationFailed as e:
-        # Handle the case where the token is invalid or expired
-        return Response({'error': str(e)}, status=status.HTTP_401_UNAUTHORIZED)
-    except Exception as e:
-        # Handle any other exceptions
-        return Response({'error': 'An unexpected error occurred: ' + str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return Response({'message': 'Token is valid'}, status=status.HTTP_200_OK)
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -50,21 +43,23 @@ def register_Rider(request):
     age = request.data.get('age')
     latitude = request.data.get('latitude')
     longitude = request.data.get('longitude')
-    profile_picture = request.data.get('picture_picture')
+    profile_picture = request.data.get('profile_picture')
 
-
-
-    # Check if the username or email already exists
     if User.objects.filter(username=username).exists():
-       return Response({'error': 'Username already exists'}, status=400)
+        return Response({'error': 'Username already exists'}, status=400)
     elif User.objects.filter(email=email).exists():
         return Response({'error': 'Email already exists'}, status=400)
+
     try:
+        verification_session = stripe.identity.VerificationSession.create(
+            type='document',
+            metadata={'email': email, 'cpn': cpn}
+        )
+
         with transaction.atomic():
             user = User.objects.create_user(username=username, email=email, password=password)
-
-            # Create the user profile
-            UserProfile.objects.create(
+            
+            user_profile = UserProfile.objects.create(
                 user=user,
                 phone_number=phone_number,
                 address=address,
@@ -72,9 +67,21 @@ def register_Rider(request):
                 cpn=cpn,
                 latitude=latitude,
                 longitude=longitude,
-                profile_picture=profile_picture
+                profile_picture=profile_picture,
+                verification_status='pending',
+                verification_session_id=verification_session.id
             )
-        return Response({'message': 'User registered successfully'})
+
+            refresh = RefreshToken.for_user(user)
+
+            return Response({
+                'message': 'Registration successful',
+                'verification_url': verification_session.url,
+                'access': str(refresh.access_token),
+                'refresh': str(refresh),
+                'user_id': user.id
+            })
+
     except Exception as e:
         return Response({'error': str(e)}, status=400)
 
@@ -84,88 +91,109 @@ def Login_Rider(request):
     username = request.data.get('username')
     password = request.data.get('password')
 
-    # Authenticate user
     user = authenticate(username=username, password=password)
 
-    if user is not None:
-        # Create or retrieve token
-        expiry = timedelta(minutes=30)
-        _, token = AuthToken.objects.create(user, expiry=expiry)
-        returninguser = UserProfileSerializer(user.userprofile)
-        jsondata = returninguser.data
-        return Response({'user ': {'username':user.username,'email':user.email, 'phone_number' : jsondata['phone_number'] ,'profile_picture': jsondata['profile_picture'], 'address': jsondata['address'], 'token': token} })
-    else:
-        return Response({'error': 'Invalid credentials'}, status=400)
+    if user:
+        rider = get_object_or_404(UserProfile, user=user)
+        
+        if rider.verification_status != 'verified':
+            return Response({
+                'error': 'Account not verified',
+                'verification_status': rider.verification_status
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        refresh = RefreshToken.for_user(user)
+        returninguser = UserProfileSerializer(rider)
+        
+        return Response({
+            'user': {
+                'username': user.username,
+                'email': user.email,
+                'phone_number': returninguser.data['phone_number'],
+                'profile_picture': returninguser.data['profile_picture'],
+                'address': returninguser.data['address'],
+                'verification_status': rider.verification_status,
+                'access': str(refresh.access_token),
+                'refresh': str(refresh)
+            }
+        })
+    return Response({'error': 'Invalid credentials'}, status=400)
 
 @api_view(['POST'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
+def verification_webhook(request):
+    event = stripe.Event.construct_from(request.data, stripe.api_key)
+    
+    if event.type == 'identity.verification_session.verified':
+        session = event.data.object
+        try:
+            rider = UserProfile.objects.get(verification_session_id=session.id)
+            rider.verification_status = 'verified'
+            rider.save()
+            
+            return Response({'status': 'verification successful'})
+        except UserProfile.DoesNotExist:
+            return Response({'error': 'Rider not found'}, status=404)
+    
+    return Response({'status': 'received'})
+
+@api_view(['POST'])
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
 def Logout_Rider(request):
-  
-    if request.user.is_authenticated:
-        # Call Knox's LogoutAllView
-        knox_logout_view = LogoutAllView.as_view()
-        return knox_logout_view(request._request)
-    else:
-        return Response({'message': 'User is already logged out'}, status=status.HTTP_200_OK)
+    try:
+        refresh_token = request.data["refresh"]
+        token = RefreshToken(refresh_token)
+        token.blacklist()
+        return Response({'message': 'Successfully logged out'}, status=status.HTTP_200_OK)
+    except Exception:
+        return Response({'error': 'Invalid token'}, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['PUT'])
-@login_required
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
 def update_Rider_profile(request):
-    # get the UserProfile object for the authenticated user
     user_profile = request.user.userprofile 
+    serializer = UserProfileSerializer(user_profile, data=request.data, partial=True)
 
-    data = request.data
-
-    # Serialize the data received in the request
-    serializer = UserProfileSerializer(user_profile, data=data, partial= True)
-
-    # Validate and save the updated data
     if serializer.is_valid():
         serializer.save()
         return Response({'message': 'Profile updated successfully'})
-    else:
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['DELETE'])
-@login_required
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
 def delete_Rider_profile(request):
-    # Retrieve the UserProfile object for the authenticated user
     user_profile = request.user.userprofile
-
-    # Delete the UserProfile object
     user_profile.delete()
     logout(request)
-
     return Response({'message': 'User profile deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
 
 @api_view(['GET'])
-@login_required
+@authentication_classes([JWTAuthentication])
+@permission_classes([IsAuthenticated])
 def search_Rider_profile(request, username):
     try:
-        # Retrieve the user based on the provided username
         user = User.objects.get(username=username)
+        user_profile = user.userprofile
+        serializer = UserProfileSerializer(user_profile)
+        return Response(serializer.data)
     except User.DoesNotExist:
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    # Retrieve the UserProfile object for the user
-    user_profile = user.userprofile
-
-    # Serialize the UserProfile object
-    serializer = UserProfileSerializer(user_profile)
-
-    return Response(serializer.data)
-
-
 @api_view(['POST'])
+@authentication_classes([JWTAuthentication])
 @permission_classes([IsAuthenticated])
 def update_location(request):
     user_profile = request.user.userprofile
     latitude = request.data.get('latitude')
     longitude = request.data.get('longitude')
+    
     if latitude and longitude:
         user_profile.latitude = float(latitude)
         user_profile.longitude = float(longitude)
         user_profile.save()
         return Response({'status': 'location updated'})
-    else:
-        return Response({'error': 'Invalid data'}, status=400)
-        return Response({'error': 'Invalid data'}, status=400)
+    return Response({'error': 'Invalid data'}, status=400)
