@@ -1,18 +1,21 @@
 import axios from "axios";
 
 const backendUrl = process.env.REACT_APP_BACKEND_URL;
+const backend2 = "https://86c4-86-125-92-90.ngrok-free.app"
+const backend3 = "https://b685-2a02-2f09-3707-ae00-3de1-ebab-ed07-3a39.ngrok-free.app"
 const axiosInstance = axios.create({
-  baseURL: backendUrl, // Replace with your API base URL
+  baseURL: backend3, // Replace with your API base URL
   timeout: 10000, // Request timeout (optional)
   headers: {
     "Content-Type": "application/json",
+    'ngrok-skip-browser-warning': 'true'
   },
 });
 
 axiosInstance.interceptors.request.use(
     (config) => {
       console.log("Request URL:", config.baseURL + config.url);
-      const token = localStorage.getItem("access_token");
+      const token = localStorage.getItem("access");
       if (token) {
         config.headers.Authorization = `Bearer ${token}`;
       }

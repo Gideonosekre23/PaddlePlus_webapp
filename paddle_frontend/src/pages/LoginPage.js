@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Box, Button, TextField, Typography, CircularProgress, FormControlLabel, Checkbox } from "@mui/material";
 import { loginUser } from "../utils/api";
 import { useNavigate } from "react-router-dom";
-import saveToLocalStorage from "../utils/utils";
+import { saveToLocalStorage } from "../utils/utils";
 import "../styles/LoginPage.css";
 
 const LoginPage = () => {
@@ -38,6 +38,7 @@ const LoginPage = () => {
       const response = await loginUser(formData, isOwner);
       console.log(response.user);
       saveToLocalStorage(response.user);
+      console.log(localStorage.getItem('access'));
       setTimeout(() => {
         setIsLoading(false);
         navigate("/home", {state: { isOwner }});

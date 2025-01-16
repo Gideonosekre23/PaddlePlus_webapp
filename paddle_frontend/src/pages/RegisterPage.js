@@ -3,7 +3,7 @@ import { Box, Button, TextField, Typography, CircularProgress, FormControlLabel,
 import { useNavigate } from "react-router-dom";
 import "../styles/RegisterPage.css";
 import { registerUser } from "../utils/api";
-import saveToLocalStorage from "../utils/utils";
+import { saveToLocalStorage, createNgrokSocketUrl } from "../utils/utils";
 
 const RegisterPage = () => {
   const navigate = useNavigate();
@@ -42,6 +42,8 @@ const RegisterPage = () => {
       const response = await registerUser(formData, isOwner);
       const { message, verification_url, websocket_url } = response;
 
+      const updatedWebSocketUrl = createNgrokSocketUrl(websocket_url)
+      console.log(updatedWebSocketUrl);
       console.log(message);
       console.log(verification_url);
 
@@ -50,7 +52,7 @@ const RegisterPage = () => {
         window.open(verification_url, "_blank");
 
         let shouldCloseModal = true;
-        const ws = new WebSocket(websocket_url);
+        const ws = new WebSocket(updatedWebSocketUrl);
 
         ws.onopen = () => {
           console.log("WebSocket connection established.");
@@ -65,16 +67,17 @@ const RegisterPage = () => {
               shouldCloseModal = false;
               console.log("Verification successful:", data);
               ws.close(1000);
-              saveToLocalStorage(data.user);
               setTimeout(() => {
                 setIsLoading(false);
-                navigate("/home", {state: { isOwner }});
+                navigate("/login");
               }, 2000);
             } else if (data.status === "failed" || data.status === "canceled") {
               console.error("Verification failed:", data.message);
               ws.close();
               alert("Verification failed. Please try again.");
               setIsLoading(false);
+            } else if (data.status === "unverified") {
+              console.log("Continuing...");
             }
           }
         };
@@ -187,7 +190,7 @@ const RegisterPage = () => {
                 color="primary"
               />
             }
-            label="Log in as an owner"
+            label="Register as an owner"
           />
           <Button
             variant="contained"

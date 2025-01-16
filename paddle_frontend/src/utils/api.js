@@ -46,14 +46,16 @@ export const loginUser = async (credentials, isOwner) => {
   try {
     console.log("Is owner? ", isOwner);
     const response = await axiosInstance.post(`/${baseApiString}/login/`, credentials);
-    // const token = response.data.user.token;
-    // console.log(token);
     return response.data;
   } catch (error) {
     console.warn('Error logging in user:', error.response || error.message || error);
     throw error;
   }
 };
+
+export const logoutUser = async(isOwner) => {
+  const baseApiString = isOwner ? "owner" : "rider";
+}
 
 export const getOwnerBikes = async () => {
   try {
@@ -62,7 +64,7 @@ export const getOwnerBikes = async () => {
     return response.data;
   } catch (error) {
     console.warn('Error fetching bikes:', error.response || error.message || error);
-    throw error.response ? error.response.data : error;
+    throw error;
   }
 };
 
@@ -73,6 +75,29 @@ export const addBike = async (bikeData) => {
     return response;
   } catch (error) {
     console.warn('Error add bike:', error.response || error.message || error);
-    throw error.response ? error.response.data : error;
+    throw error;
   }
 };
+
+export const getNearbyBikes = async (location) => {
+  try {
+    console.log(location);
+    const response = await axiosInstance.get(`/bikes/nearby/?latitude=${location.latitude}&longitude=${location.longitude}`);
+    console.log("NEARBY BIKES RESPONSE: ", JSON.stringify(response.data, null, 2));
+    return response.data;
+  } catch (error) {
+    console.warn('Error get nearby bike:', error.response || error.message || error);
+    throw error;
+  }
+}
+
+export const requestRide = async (formData) => {
+  try {
+    const response = await axiosInstance.post("/riderequest/request/", formData);
+    console.log("RIDE REQUEST RESPONSE", JSON.stringify(response.data, null, 2));
+    return response.data;
+  } catch (error) {
+    console.warn('Error get nearby bike:', error.response || error.message || error);
+    throw error;
+  }
+}

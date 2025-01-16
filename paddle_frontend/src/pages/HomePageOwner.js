@@ -14,7 +14,9 @@ import {
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import PositionSelector from "../components/PositionSelector";
 import { addBike, getOwnerBikes } from "../utils/api";
+import { createNgrokSocketUrlAlt } from "../utils/utils";
 import "../styles/HomePageOwner.css";
 
 const HomePageOwner = () => {
@@ -31,6 +33,7 @@ const HomePageOwner = () => {
   });
   const [bikes, setBikes] = useState([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [socket, setSocket] = useState(null);
 
   useEffect(() => {
     const fetchBikes = async () => {
@@ -43,6 +46,33 @@ const HomePageOwner = () => {
     };
 
     fetchBikes();
+    
+    const token = localStorage.getItem('access');
+    const rawWsUrl = createNgrokSocketUrlAlt(localStorage.getItem("ws_url"));
+
+    const proxyUrl = `ws://localhost:8080?token=${token}&wsUrl=${rawWsUrl}`;
+    const ws = new WebSocket(proxyUrl);
+
+    ws.onopen = () => {
+      console.log('Connected to the proxy');
+    };
+
+    ws.onmessage = (event) => {
+      console.log('Message from proxy (ultimately from real server):', event.data);
+    };
+
+    ws.onerror = (err) => {
+      console.error('Proxy WebSocket error:', err);
+    };
+
+    ws.onclose = () => {
+      console.log('Proxy WebSocket closed.');
+    };
+
+    // Cleanup on unmount
+    return () => {
+      ws.close();
+    };
   }, []);
 
   const handleDialogOpen = () => {
@@ -72,6 +102,15 @@ const HomePageOwner = () => {
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData({ ...formData, [name]: value });
+  };
+
+  // Data handler for position selector component
+  const handleLocationSelect = (lat, lng) => {
+    setFormData((prev) => ({
+      ...prev,
+      latitude: lat.toString(),
+      longitude: lng.toString(),
+    }));
   };
 
   const handleSubmit = async (e) => {
@@ -137,7 +176,11 @@ const HomePageOwner = () => {
         </Fab>
 
         {/* Dialog Box */}
-        <Dialog open={isDialogOpen} onClose={handleDialogClose}>
+        <Dialog 
+          open={isDialogOpen}
+          onClose={handleDialogClose}
+          fullWidth
+        >
           <DialogTitle>Add a New Bike</DialogTitle>
           <DialogContent>
             <Box
@@ -209,6 +252,11 @@ const HomePageOwner = () => {
                 fullWidth
                 required
               />
+              <Typography variant="body1"><strong>Select Location:</strong></Typography>
+              <PositionSelector
+                latitude={formData.latitude}
+                longitude={formData.longitude}
+                onLocationSelect={handleLocationSelect} />
             </Box>
           </DialogContent>
           <DialogActions>
