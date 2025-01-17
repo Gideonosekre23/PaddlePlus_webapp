@@ -1,3 +1,4 @@
+import logging
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.permissions import IsAuthenticated
@@ -213,7 +214,7 @@ def get_nearby_bikes(request):
 @api_view(['POST'])
 @authentication_classes([JWTAuthentication])
 @permission_classes([IsAuthenticated])
-def add_bike(request):
+def add_bike_unused(request):
     # Ensure user is an owner
     owner_profile = request.user.owner_profile
     
@@ -229,7 +230,7 @@ def add_bike(request):
         'description': request.data.get('description')
     }
     
-    serializer = BikesSerializer(data=bike_data)
+    serializer = BikesSerializer(data=bike_data, context={'request': request})
     if serializer.is_valid():
         bike = serializer.save()
         

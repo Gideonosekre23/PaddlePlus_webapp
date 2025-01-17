@@ -131,7 +131,7 @@ class Bikes(models.Model):
         if self.hardware:
             return {
                 'status': self.hardware_status,
-                'battery': self.hardware.battery_battery_level,
+                'battery': self.hardware.battery_level,
                 'last_unlock': self.last_unlock_time,
                 'last_lock': self.last_lock_time,
                 'last_ping': self.hardware.last_ping,

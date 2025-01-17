@@ -34,7 +34,7 @@ class BikesSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Bikes
-        fields = ['owner', 'bike_name', 'brand', 'model', 'color', 'size', 'year', 'description', 'is_available', 'latitude', 'longitude']
+        fields = ['id', 'owner', 'bike_name', 'brand', 'model', 'color', 'size', 'year', 'description', 'is_available', 'latitude', 'longitude']
 
     def get_current_location(self, obj):
         if obj.latitude is not None and obj.longitude is not None:
